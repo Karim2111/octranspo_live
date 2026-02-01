@@ -4,13 +4,13 @@ A full-stack web application for real-time bus arrival predictions for Ottawa's 
 
 ## Features
 
-- 🚌 **Real-time bus tracking** with GTFS-RT feed integration
-- 🗺️ **Interactive map** with stop markers and location-based search
-- 🔍 **Search functionality** to find stops by name or code
-- 📊 **ML-enhanced predictions** using Random Forest/XGBoost models
-- 📱 **Mobile-responsive design** built with Tailwind CSS
-- ⚡ **Fast API backend** with PostgreSQL caching
-- 🎯 **Accurate arrival times** improved by machine learning
+- **Real-time bus tracking** with GTFS-RT feed integration
+- **Interactive map** with stop markers and location-based search
+- **Search functionality** to find stops by name or code
+- **ML-enhanced predictions** using Random Forest/XGBoost models
+- **Mobile-responsive design** built with Tailwind CSS
+- **Fast API backend** with PostgreSQL caching
+- **Accurate arrival times** improved by machine learning
 
 ## Tech Stack
 
