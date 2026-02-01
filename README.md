@@ -34,7 +34,7 @@ A full-stack web application for real-time bus arrival predictions for Ottawa's 
 ## Project Structure
 
 ```
-oc-transpo-live/
+octranspo_live/
 ├── backend/
 │   ├── main.py              # FastAPI application
 │   ├── models.py            # Database models
@@ -42,13 +42,12 @@ oc-transpo-live/
 │   ├── database.py          # Database configuration
 │   ├── config.py            # Settings
 │   ├── gtfs_processor.py    # GTFS data pipeline
-│   ├── requirements.txt     # Python dependencies
-│   └── Dockerfile
+│   ├── init_db.py           # Database initialization
+│   └── requirements.txt     # Python dependencies
 ├── ml-service/
 │   ├── main.py              # ML prediction service
 │   ├── train_model.py       # Model training script
-│   ├── requirements.txt     # Python dependencies
-│   └── Dockerfile
+│   └── requirements.txt     # Python dependencies
 ├── frontend/
 │   ├── src/
 │   │   ├── App.js           # Main React component
@@ -56,109 +55,135 @@ oc-transpo-live/
 │   │   └── index.css        # Tailwind styles
 │   ├── public/
 │   ├── package.json
-│   ├── tailwind.config.js
-│   └── Dockerfile
-└── docker-compose.yml
+│   └── tailwind.config.js
+├── ARCHITECTURE.md          # System architecture docs
+├── SETUP_NO_DOCKER.md      # Detailed setup guide
+└── README.md
 ```
 
 ## Getting Started
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- Node.js 18+ (for local development)
-- Python 3.11+ (for local development)
+- Python 3.11 or higher
+- Node.js 18 or higher
+- PostgreSQL 14 or higher
+- npm or yarn
 - OC Transpo API credentials (optional, for enhanced features)
 
-### Quick Start with Docker
+### Quick Start
 
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd oc-transpo-live
+cd octranspo_live
 ```
 
-2. Start all services:
+2. Set up PostgreSQL database:
 ```bash
-docker-compose up -d
+psql postgres
+CREATE DATABASE octranspo_live;
+CREATE USER octranspo WITH PASSWORD 'octranspo';
+GRANT ALL PRIVILEGES ON DATABASE octranspo_live TO octranspo;
+\q
 ```
 
-3. Access the application:
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- ML Service: http://localhost:8001
-- API Docs: http://localhost:8000/docs
-
-### Local Development Setup
-
-#### Backend
-
+3. Set up and start the backend:
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+venv\Scripts\activate  # On Windows
+# source venv/bin/activate  # On macOS/Linux
 pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your database credentials
-
-# Run database migrations
-alembic upgrade head
-
-# Start the server
-uvicorn main:app --reload
+python init_db.py
+uvicorn main:app --reload --port 8000
 ```
 
-#### ML Service
-
+4. Set up and start the ML service (new terminal):
 ```bash
 cd ml-service
 python -m venv venv
-source venv/bin/activate
+venv\Scripts\activate  # On Windows
 pip install -r requirements.txt
-
-# Train the initial model
 python train_model.py
-
-# Start the service
-uvicorn main:app --port 8001 --reload
+uvicorn main:app --reload --port 8001
 ```
 
-#### Frontend
-
+5. Set up and start the frontend (new terminal):
 ```bash
 cd frontend
 npm install
 npm start
 ```
 
+6. Access the application:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000
+- ML Service: http://localhost:8001
+- API Docs: http://localhost:8000/docs
+
+> **Note:** For detailed setup instructions, see [SETUP_NO_DOCKER.md](SETUP_NO_DOCKER.md)
+
+### Development Workflow
+
+Once installed, you can run each service independently:
+
+#### Backend
+```bash
+cd backend
+venv\Scripts\activate  # On Windows
+uvicorn main:app --reload
+```
+
+#### ML Service
+```bash
+cd ml-service
+venv\Scripts\activate  # On Windows
+uvicorn main:app --port 8001 --reload
+```
+
+#### Frontend
+```bash
+cd frontend
+npm start
+```
+
+#### Initialize/Update Database
+```bash
+cd backend
+venv\Scripts\activate
+python init_db.py
+```
+
 ## Configuration
 
 ### Environment Variables
 
-Create a `.env` file in the backend directory:
+The application uses `config.py` for settings. You can optionally create a `.env` file in the backend directory to override defaults:
 
 ```env
-# Database
+# Database (default if not specified)
 DATABASE_URL=postgresql://octranspo:octranspo@localhost:5432/octranspo_live
 
-# OC Transpo API (optional)
-OC_TRANSPO_APP_ID=your_app_id
-OC_TRANSPO_API_KEY=your_api_key
-
-# GTFS URLs
-GTFS_STATIC_URL=https://www.octranspo.com/files/google_transit.zip
-GTFS_RT_VEHICLE_URL=https://gtfs.octranspo.com/gtfs-rt/vehiclepositions
-GTFS_RT_TRIP_URL=https://gtfs.octranspo.com/gtfs-rt/tripupdates
-
-# ML Service
+# ML Service (default if not specified)
 ML_SERVICE_URL=http://localhost:8001
 
 # App Settings
 DEBUG=True
 CACHE_TTL=300
+
+# Optional: OC Transpo API (for enhanced real-time features)
+OC_TRANSPO_APP_ID=your_app_id
+OC_TRANSPO_API_KEY=your_api_key
 ```
+
+### GTFS Data
+
+The application downloads GTFS data from:
+- **Static data:** https://www.octranspo.com/files/google_transit.zip
+- **Real-time updates:** https://gtfs.octranspo.com/gtfs-rt/ (vehiclepositions, tripupdates)
+
+Data is automatically fetched and cached during initialization.
 
 ## API Endpoints
 
@@ -231,17 +256,27 @@ This will:
 - [ ] Set up CI/CD pipeline
 - [ ] Implement rate limiting
 - [ ] Add authentication (if needed)
+- [ ] Set up process manager (e.g., systemd, PM2, or supervisor)
+- [ ] Configure reverse proxy (nginx or Apache)
 
 ### Hosting Options
 
-- **Backend/ML**: AWS ECS, Google Cloud Run, Railway
-- **Frontend**: Vercel, Netlify, AWS S3 + CloudFront
-- **Database**: AWS RDS, Google Cloud SQL, Railway
+- **Backend/ML**: Railway, Render, AWS EC2, Google Cloud Compute, DigitalOcean
+- **Frontend**: Vercel, Netlify, AWS S3 + CloudFront, GitHub Pages
+- **Database**: AWS RDS, Google Cloud SQL, Railway, DigitalOcean Managed PostgreSQL
+
+### Production Server Setup
+
+For production deployment, consider using:
+- **Gunicorn** or **Uvicorn workers** for the FastAPI services
+- **Nginx** as a reverse proxy
+- **systemd** services for process management
+- **Let's Encrypt** for SSL certificates
 
 ## Testing
 
 ```bash
-# Backend tests
+# Backend tests (to be implemented)
 cd backend
 pytest
 
@@ -249,6 +284,8 @@ pytest
 cd frontend
 npm test
 ```
+
+> **Note:** Unit tests are planned for future implementation.
 
 ## Contributing
 
