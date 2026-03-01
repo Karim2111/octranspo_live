@@ -1,56 +1,64 @@
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date
 
-class StopBase(BaseModel):
+
+class StopResponse(BaseModel):
     stop_id: str
-    code: Optional[str]
-    name: str
-    lat: float
-    lon: float
+    name: Optional[str]
+    stop_lat: Optional[float]
+    stop_lon: Optional[float]
+    platform_code: Optional[str]
 
-class StopResponse(StopBase):
-    id: int
-    
     class Config:
         from_attributes = True
 
-class RouteBase(BaseModel):
+
+class RouteResponse(BaseModel):
     route_id: str
-    short_name: Optional[str]
-    long_name: Optional[str]
-    route_type: int
-    color: Optional[str]
-    text_color: Optional[str]
+    name: Optional[str]
+    route_color: Optional[str]
+    route_text_color: Optional[str]
+    route_sort_order: Optional[int]
 
-class RouteResponse(RouteBase):
-    id: int
-    
     class Config:
         from_attributes = True
 
-class ArrivalPrediction(BaseModel):
-    route_short_name: str
-    route_long_name: str
-    route_id: str
-    headsign: str
-    scheduled_arrival: datetime
-    predicted_arrival: Optional[datetime]
-    delay_seconds: int
-    minutes_until_arrival: int
-    confidence: Optional[float]
-    is_realtime: bool
-    vehicle_id: Optional[str]
-    
+
+class CalendarResponse(BaseModel):
+    service_id: str
+    monday: Optional[bool]
+    tuesday: Optional[bool]
+    wednesday: Optional[bool]
+    thursday: Optional[bool]
+    friday: Optional[bool]
+    saturday: Optional[bool]
+    sunday: Optional[bool]
+    start_date: Optional[date]
+    end_date: Optional[date]
+
     class Config:
         from_attributes = True
 
-class ScheduleResponse(BaseModel):
+
+class TripResponse(BaseModel):
     trip_id: str
-    route_id: str
-    arrival_time: str
-    departure_time: str
+    route_id: Optional[str]
+    service_id: Optional[str]
+    time: Optional[datetime]
+    trip_headsign: Optional[str]
+    direction_id: Optional[int]
+
+    class Config:
+        from_attributes = True
+
+
+class StopTimeResponse(BaseModel):
+    trip_id: str
     stop_sequence: int
-    
+    stop_id: Optional[str]
+    arrival_time: Optional[str]
+    departure_time: Optional[str]
+
     class Config:
         from_attributes = True

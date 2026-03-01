@@ -9,10 +9,10 @@ class Settings(BaseSettings):
     OC_TRANSPO_APP_ID: Optional[str] = None
     OC_TRANSPO_API_KEY: Optional[str] = None
     
-    # GTFS URLs
-    GTFS_STATIC_URL: str = "https://www.octranspo.com/files/google_transit.zip"
-    GTFS_RT_VEHICLE_URL: str = "https://gtfs.octranspo.com/gtfs-rt/vehiclepositions"
-    GTFS_RT_TRIP_URL: str = "https://gtfs.octranspo.com/gtfs-rt/tripupdates"
+    # GTFS Schedules
+    # GTFS static data Downloads GTFSEXPORT.zip
+    GTFS_STATIC_URL: str = "https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip"
+    
     
     # ML Service
     ML_SERVICE_URL: str = "http://localhost:8001"

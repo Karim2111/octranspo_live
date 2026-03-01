@@ -2,192 +2,174 @@ import httpx
 import zipfile
 import io
 import csv
-from datetime import datetime, timedelta
-from typing import List, Dict
+from datetime import datetime, date
+from typing import Optional
 from sqlalchemy.orm import Session
-from google.transit import gtfs_realtime_pb2
-import json
 
-from models import Stop, Route, Schedule, Prediction, GTFSCache
+from models import Route, Calendar, Stop, Trip, StopTime
 from config import settings
+
 
 class GTFSProcessor:
     def __init__(self):
         self.static_data_loaded = False
-    
+
     async def load_static_gtfs(self, db: Session):
-        """Download and load static GTFS data"""
-        print("Loading static GTFS data...")
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(settings.GTFS_STATIC_URL, timeout=60.0)
-            
-            if response.status_code != 200:
-                raise Exception(f"Failed to download GTFS data: {response.status_code}")
-            
-            # Extract zip file
-            zip_data = zipfile.ZipFile(io.BytesIO(response.content))
-            
-            # Load stops
-            await self._load_stops(zip_data, db)
-            
-            # Load routes
-            await self._load_routes(zip_data, db)
-            
-            # Load stop times (schedules)
-            await self._load_schedules(zip_data, db)
-            
-            db.commit()
-            self.static_data_loaded = True
-            print("Static GTFS data loaded successfully")
-    
-    async def _load_stops(self, zip_data: zipfile.ZipFile, db: Session):
-        """Load stops from stops.txt"""
-        with zip_data.open('stops.txt') as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, 'utf-8'))
-            
-            for row in reader:
-                stop = db.query(Stop).filter(Stop.stop_id == row['stop_id']).first()
-                if not stop:
-                    stop = Stop(
-                        stop_id=row['stop_id'],
-                        code=row.get('stop_code'),
-                        name=row['stop_name'],
-                        lat=float(row['stop_lat']),
-                        lon=float(row['stop_lon']),
-                        location_type=int(row.get('location_type', 0)),
-                        parent_station=row.get('parent_station')
-                    )
-                    db.add(stop)
-            
-            db.flush()
-    
-    async def _load_routes(self, zip_data: zipfile.ZipFile, db: Session):
-        """Load routes from routes.txt"""
-        with zip_data.open('routes.txt') as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, 'utf-8'))
-            
-            for row in reader:
-                route = db.query(Route).filter(Route.route_id == row['route_id']).first()
-                if not route:
-                    route = Route(
-                        route_id=row['route_id'],
-                        short_name=row.get('route_short_name'),
-                        long_name=row.get('route_long_name'),
-                        route_type=int(row.get('route_type', 3)),
-                        color=row.get('route_color'),
-                        text_color=row.get('route_text_color')
-                    )
-                    db.add(route)
-            
-            db.flush()
-    
-    async def _load_schedules(self, zip_data: zipfile.ZipFile, db: Session):
-        """Load schedules from stop_times.txt (sample only for performance)"""
-        # In production, you'd want to filter by service_id for current day
-        with zip_data.open('stop_times.txt') as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, 'utf-8'))
-            
-            count = 0
-            for row in reader:
-                # Sample every 10th record to avoid massive database
-                if count % 10 == 0:
-                    schedule = Schedule(
-                        stop_id=row['stop_id'],
-                        trip_id=row['trip_id'],
-                        arrival_time=row['arrival_time'],
-                        departure_time=row['departure_time'],
-                        stop_sequence=int(row['stop_sequence'])
-                    )
-                    db.add(schedule)
-                count += 1
-            
-            db.flush()
-    
-    async def fetch_realtime_updates(self):
-        """Fetch GTFS-RT trip updates"""
+        """Download GTFSExport.zip and load all tables into the database."""
+        print(f"Downloading GTFS data from {settings.GTFS_STATIC_URL} ...")
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.get(settings.GTFS_STATIC_URL, timeout=120.0)
+
+        if response.status_code != 200:
+            raise Exception(f"Failed to download GTFS data: {response.status_code}")
+
+        zip_data = zipfile.ZipFile(io.BytesIO(response.content))
+
+        print("  Loading stops...")
+        self._load_stops(zip_data, db)
+
+        print("  Loading routes...")
+        self._load_routes(zip_data, db)
+
+        print("  Loading calendar...")
+        self._load_calendar(zip_data, db)
+
+        print("  Loading trips...")
+        self._load_trips(zip_data, db)
+
+        print("  Loading stop_times (this may take a while)...")
+        self._load_stop_times(zip_data, db)
+
+        db.commit()
+        self.static_data_loaded = True
+        print("Static GTFS data loaded successfully.")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_date(date_str: str) -> Optional[date]:
+        """Convert GTFS YYYYMMDD string to a Python date."""
+        if not date_str or not date_str.strip():
+            return None
         try:
-            async with httpx.AsyncClient() as client:
-                # Fetch trip updates
-                response = await client.get(settings.GTFS_RT_TRIP_URL, timeout=10.0)
-                
-                if response.status_code == 200:
-                    feed = gtfs_realtime_pb2.FeedMessage()
-                    feed.ParseFromString(response.content)
-                    
-                    return self._parse_trip_updates(feed)
-        except Exception as e:
-            print(f"Error fetching real-time updates: {e}")
-            return []
-    
-    def _parse_trip_updates(self, feed) -> List[Dict]:
-        """Parse GTFS-RT trip updates"""
-        updates = []
-        
-        for entity in feed.entity:
-            if entity.HasField('trip_update'):
-                trip_update = entity.trip_update
-                
-                for stop_time_update in trip_update.stop_time_update:
-                    updates.append({
-                        'trip_id': trip_update.trip.trip_id,
-                        'route_id': trip_update.trip.route_id,
-                        'stop_id': stop_time_update.stop_id,
-                        'arrival_delay': stop_time_update.arrival.delay if stop_time_update.HasField('arrival') else 0,
-                        'arrival_time': stop_time_update.arrival.time if stop_time_update.HasField('arrival') else None,
-                        'vehicle_id': trip_update.vehicle.id if trip_update.HasField('vehicle') else None
-                    })
-        
-        return updates
-    
-    async def get_predictions_for_stop(self, stop_id: str, db: Session) -> List[Dict]:
-        """Get arrival predictions for a specific stop"""
-        now = datetime.now()
-        
-        # Get scheduled arrivals for next 2 hours
-        predictions = []
-        
-        # Query schedules
-        schedules = db.query(Schedule).filter(
-            Schedule.stop_id == stop_id
-        ).limit(20).all()
-        
-        for schedule in schedules:
-            route = db.query(Route).filter(Route.route_id == schedule.route_id).first()
-            if not route:
-                continue
-            
-            # Parse arrival time
-            try:
-                hours, minutes, seconds = map(int, schedule.arrival_time.split(':'))
-                scheduled_time = now.replace(hour=hours % 24, minute=minutes, second=seconds, microsecond=0)
-                
-                # Adjust for next day if needed
-                if scheduled_time < now:
-                    scheduled_time += timedelta(days=1)
-                
-                minutes_until = int((scheduled_time - now).total_seconds() / 60)
-                
-                # Only include arrivals in next 120 minutes
-                if 0 <= minutes_until <= 120:
-                    predictions.append({
-                        'route_short_name': route.short_name or route.route_id,
-                        'route_long_name': route.long_name or '',
-                        'route_id': route.route_id,
-                        'headsign': route.long_name or '',
-                        'scheduled_arrival': scheduled_time.isoformat(),
-                        'predicted_arrival': scheduled_time.isoformat(),
-                        'delay_seconds': 0,
-                        'minutes_until_arrival': minutes_until,
-                        'confidence': 0.8,
-                        'is_realtime': False,
-                        'vehicle_id': None
-                    })
-            except Exception as e:
-                print(f"Error parsing time: {e}")
-                continue
-        
-        # Sort by arrival time
-        predictions.sort(key=lambda x: x['minutes_until_arrival'])
-        
-        return predictions[:10]  # Return top 10 upcoming arrivals
+            return datetime.strptime(date_str.strip(), "%Y%m%d").date()
+        except ValueError:
+            return None
+
+    # ------------------------------------------------------------------
+    # Loaders
+    # ------------------------------------------------------------------
+
+    def _load_stops(self, zip_data: zipfile.ZipFile, db: Session):
+        with zip_data.open("stops.txt") as f:
+            reader = csv.DictReader(io.TextIOWrapper(f, "utf-8"))
+            batch = []
+            for row in reader:
+                batch.append(
+                    dict(
+                        stop_id=row["stop_id"],
+                        name=row.get("stop_name"),
+                        stop_lat=float(row["stop_lat"]) if row.get("stop_lat") else None,
+                        stop_lon=float(row["stop_lon"]) if row.get("stop_lon") else None,
+                        platform_code=row.get("platform_code") or None,
+                    )
+                )
+                if len(batch) >= 1000:
+                    db.bulk_insert_mappings(Stop, batch)
+                    db.flush()
+                    batch = []
+            if batch:
+                db.bulk_insert_mappings(Stop, batch)
+                db.flush()
+
+    def _load_routes(self, zip_data: zipfile.ZipFile, db: Session):
+        with zip_data.open("routes.txt") as f:
+            reader = csv.DictReader(io.TextIOWrapper(f, "utf-8"))
+            batch = []
+            for row in reader:
+                sort_order = row.get("route_sort_order")
+                batch.append(
+                    dict(
+                        route_id=row["route_id"],
+                        name=row.get("route_long_name") or row.get("route_short_name"),
+                        route_color=row.get("route_color") or None,
+                        route_text_color=row.get("route_text_color") or None,
+                        route_sort_order=int(sort_order) if sort_order else None,
+                    )
+                )
+            if batch:
+                db.bulk_insert_mappings(Route, batch)
+                db.flush()
+
+    def _load_calendar(self, zip_data: zipfile.ZipFile, db: Session):
+        with zip_data.open("calendar.txt") as f:
+            reader = csv.DictReader(io.TextIOWrapper(f, "utf-8"))
+            batch = []
+            for row in reader:
+                batch.append(
+                    dict(
+                        service_id=row["service_id"],
+                        monday=bool(int(row.get("monday", 0))),
+                        tuesday=bool(int(row.get("tuesday", 0))),
+                        wednesday=bool(int(row.get("wednesday", 0))),
+                        thursday=bool(int(row.get("thursday", 0))),
+                        friday=bool(int(row.get("friday", 0))),
+                        saturday=bool(int(row.get("saturday", 0))),
+                        sunday=bool(int(row.get("sunday", 0))),
+                        start_date=self._parse_date(row.get("start_date")),
+                        end_date=self._parse_date(row.get("end_date")),
+                    )
+                )
+            if batch:
+                db.bulk_insert_mappings(Calendar, batch)
+                db.flush()
+
+    def _load_trips(self, zip_data: zipfile.ZipFile, db: Session):
+        with zip_data.open("trips.txt") as f:
+            reader = csv.DictReader(io.TextIOWrapper(f, "utf-8"))
+            batch = []
+            for row in reader:
+                direction = row.get("direction_id")
+                batch.append(
+                    dict(
+                        trip_id=row["trip_id"],
+                        route_id=row["route_id"],
+                        service_id=row.get("service_id"),
+                        time=None,  # GTFS trips.txt has no direct timestamp field
+                        trip_headsign=row.get("trip_headsign"),
+                        direction_id=int(direction) if direction else None,
+                    )
+                )
+                if len(batch) >= 5000:
+                    db.bulk_insert_mappings(Trip, batch)
+                    db.flush()
+                    batch = []
+            if batch:
+                db.bulk_insert_mappings(Trip, batch)
+                db.flush()
+
+    def _load_stop_times(self, zip_data: zipfile.ZipFile, db: Session):
+        with zip_data.open("stop_times.txt") as f:
+            reader = csv.DictReader(io.TextIOWrapper(f, "utf-8"))
+            batch = []
+            for row in reader:
+                batch.append(
+                    dict(
+                        trip_id=row["trip_id"],
+                        stop_sequence=int(row["stop_sequence"]),
+                        stop_id=row["stop_id"],
+                        arrival_time=row.get("arrival_time"),
+                        departure_time=row.get("departure_time"),
+                    )
+                )
+                if len(batch) >= 10000:
+                    db.bulk_insert_mappings(StopTime, batch)
+                    db.flush()
+                    batch = []
+            if batch:
+                db.bulk_insert_mappings(StopTime, batch)
+                db.flush()
+
