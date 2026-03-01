@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, ForeignKey, Date
+from sqlalchemy import Column, String, Float, Integer, Boolean, ForeignKey, Date
 from database import Base
 
 
@@ -45,9 +45,18 @@ class Trip(Base):
     # service_id has no DB-level FK because OC Transpo trips reference service_ids
     # that may only exist in calendar_dates.txt, not calendar.txt
     service_id = Column(String, index=True)
-    time = Column(DateTime, nullable=True)
+    shape_id = Column(String, index=True, nullable=True)
     trip_headsign = Column(String)
     direction_id = Column(Integer)
+
+
+class Shape(Base):
+    __tablename__ = "shapes"
+
+    shape_id = Column(String, primary_key=True)
+    shape_pt_sequence = Column(Integer, primary_key=True)
+    shape_pt_lat = Column(Float)
+    shape_pt_lon = Column(Float)
 
 
 class StopTime(Base):

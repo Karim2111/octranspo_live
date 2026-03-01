@@ -1,27 +1,24 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 
+
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql://octranspo:octranspo@localhost:5432/octranspo_live"
-    
-    # OC Transpo API (you'll need to get an API key from OC Transpo)
-    OC_TRANSPO_APP_ID: Optional[str] = None
-    OC_TRANSPO_API_KEY: Optional[str] = None
-    
-    # GTFS Schedules
-    # GTFS static data Downloads GTFSEXPORT.zip
-    GTFS_STATIC_URL: str = "https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip"
-    
-    
-    # ML Service
-    ML_SERVICE_URL: str = "http://localhost:8001"
-    
-    # App Settings
-    DEBUG: bool = True
-    CACHE_TTL: int = 300  # 5 minutes
-    
+    DATABASE_URL: str
+
+    # GTFS static feed
+    GTFS_STATIC_URL: str
+
+    # GTFS-RT real-time feeds
+    GTFS_RT_VEHICLE_POSITIONS_URL: str = "https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-vp/beta/v1/VehiclePositions"
+    GTFS_PRIMARY_KEY: Optional[str] = None
+
+    # App
+    DEBUG: bool = False
+
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
 
 settings = Settings()

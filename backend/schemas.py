@@ -1,6 +1,6 @@
 from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime, date
+from typing import Optional
+from datetime import date
 
 
 class StopResponse(BaseModel):
@@ -45,7 +45,7 @@ class TripResponse(BaseModel):
     trip_id: str
     route_id: Optional[str]
     service_id: Optional[str]
-    time: Optional[datetime]
+    shape_id: Optional[str]
     trip_headsign: Optional[str]
     direction_id: Optional[int]
 
@@ -59,6 +59,16 @@ class StopTimeResponse(BaseModel):
     stop_id: Optional[str]
     arrival_time: Optional[str]
     departure_time: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class ShapePointResponse(BaseModel):
+    shape_id: str
+    shape_pt_sequence: int
+    shape_pt_lat: float
+    shape_pt_lon: float
 
     class Config:
         from_attributes = True

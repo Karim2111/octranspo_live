@@ -6,7 +6,7 @@ from datetime import datetime, date
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from models import Route, Calendar, Stop, Trip, StopTime
+from models import Route, Calendar, Stop, Trip, StopTime, Shape
 from config import settings
 
 
@@ -26,6 +26,13 @@ class GTFSProcessor:
 
         zip_data = zipfile.ZipFile(io.BytesIO(response.content))
 
+        print("  Clearing existing data...")
+        # Truncate in FK-safe order (children first)
+        db.execute(__import__("sqlalchemy").text(
+            "TRUNCATE stop_times, shapes, trips, calendar, stops, routes RESTART IDENTITY CASCADE"
+        ))
+        db.commit()
+
         print("  Loading stops...")
         self._load_stops(zip_data, db)
 
@@ -37,6 +44,9 @@ class GTFSProcessor:
 
         print("  Loading trips...")
         self._load_trips(zip_data, db)
+
+        print("  Loading shapes...")
+        self._load_shapes(zip_data, db)
 
         print("  Loading stop_times (this may take a while)...")
         self._load_stop_times(zip_data, db)
@@ -138,7 +148,7 @@ class GTFSProcessor:
                         trip_id=row["trip_id"],
                         route_id=row["route_id"],
                         service_id=row.get("service_id"),
-                        time=None,  # GTFS trips.txt has no direct timestamp field
+                        shape_id=row.get("shape_id") or None,
                         trip_headsign=row.get("trip_headsign"),
                         direction_id=int(direction) if direction else None,
                     )
@@ -149,6 +159,30 @@ class GTFSProcessor:
                     batch = []
             if batch:
                 db.bulk_insert_mappings(Trip, batch)
+                db.flush()
+
+    def _load_shapes(self, zip_data: zipfile.ZipFile, db: Session):
+        if "shapes.txt" not in zip_data.namelist():
+            print("  shapes.txt not found in zip, skipping.")
+            return
+        with zip_data.open("shapes.txt") as f:
+            reader = csv.DictReader(io.TextIOWrapper(f, "utf-8"))
+            batch = []
+            for row in reader:
+                batch.append(
+                    dict(
+                        shape_id=row["shape_id"],
+                        shape_pt_sequence=int(row["shape_pt_sequence"]),
+                        shape_pt_lat=float(row["shape_pt_lat"]),
+                        shape_pt_lon=float(row["shape_pt_lon"]),
+                    )
+                )
+                if len(batch) >= 10000:
+                    db.bulk_insert_mappings(Shape, batch)
+                    db.flush()
+                    batch = []
+            if batch:
+                db.bulk_insert_mappings(Shape, batch)
                 db.flush()
 
     def _load_stop_times(self, zip_data: zipfile.ZipFile, db: Session):

@@ -2,10 +2,11 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List, Optional
+import httpx
 
 from database import get_db, init_db
-from models import Stop, Route, Trip, StopTime, Calendar
-from schemas import StopResponse, RouteResponse, TripResponse, StopTimeResponse, CalendarResponse
+from models import Stop, Route, Trip, StopTime, Calendar, Shape
+from schemas import StopResponse, RouteResponse, TripResponse, StopTimeResponse, CalendarResponse, ShapePointResponse
 from gtfs_processor import GTFSProcessor
 from config import settings
 
@@ -149,6 +150,17 @@ async def get_route_stops(route_id: str, db: Session = Depends(get_db)):
                 "departure_time": st.departure_time,
             })
 
+    # Load shape geometry for road-following polyline
+    shape = []
+    if trip.shape_id:
+        shape_rows = (
+            db.query(Shape)
+            .filter(Shape.shape_id == trip.shape_id)
+            .order_by(Shape.shape_pt_sequence)
+            .all()
+        )
+        shape = [[s.shape_pt_lat, s.shape_pt_lon] for s in shape_rows]
+
     return {
         "route_id": route.route_id,
         "name": route.name,
@@ -156,7 +168,26 @@ async def get_route_stops(route_id: str, db: Session = Depends(get_db)):
         "trip_id": trip.trip_id,
         "trip_headsign": trip.trip_headsign,
         "stops": result,
+        "shape": shape,
     }
+
+
+# ---------------------------------------------------------------------------
+# Shapes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/shapes/{shape_id}", response_model=List[ShapePointResponse])
+async def get_shape(shape_id: str, db: Session = Depends(get_db)):
+    """Return all points for a shape, ordered by sequence."""
+    points = (
+        db.query(Shape)
+        .filter(Shape.shape_id == shape_id)
+        .order_by(Shape.shape_pt_sequence)
+        .all()
+    )
+    if not points:
+        raise HTTPException(status_code=404, detail="Shape not found")
+    return points
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +283,110 @@ async def get_nearby_routes(
         }
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# GTFS-RT — live vehicle positions
+# ---------------------------------------------------------------------------
+
+@app.get("/api/debug/gtfs-rt")
+async def debug_gtfs_rt():
+    """Test the GTFS-RT vehicle positions connection."""
+    key = (settings.GTFS_PRIMARY_KEY or "").strip()
+    url = settings.GTFS_RT_VEHICLE_POSITIONS_URL
+    headers = {"Ocp-Apim-Subscription-Key": key}
+
+    result = {"url": url, "key_loaded": bool(key), "key_prefix": key[:8] + "..." if key else None}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url, headers=headers, follow_redirects=True)
+            result["status_code"] = r.status_code
+            result["bytes"] = len(r.content)
+            result["content_type"] = r.headers.get("content-type")
+            if r.status_code != 200:
+                result["response_body"] = r.text[:500]
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
+
+
+@app.get("/api/routes/{route_id}/vehicles")
+async def get_route_vehicles(route_id: str, db: Session = Depends(get_db)):
+    """
+    Fetch live vehicle positions for a route from the OC Transpo GTFS-RT feed.
+    Returns a list of vehicles with lat/lon/bearing/speed/direction_id.
+    """
+    from google.transit import gtfs_realtime_pb2
+
+    key = (settings.GTFS_PRIMARY_KEY or "").strip()
+    if not key:
+        raise HTTPException(status_code=503, detail="GTFS_PRIMARY_KEY not configured")
+
+    url = settings.GTFS_RT_VEHICLE_POSITIONS_URL
+    headers = {"Ocp-Apim-Subscription-Key": key}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers, follow_redirects=True)
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Upstream returned {exc.response.status_code}: {exc.response.text[:300]}"
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"GTFS-RT fetch failed: {exc}")
+
+    feed = gtfs_realtime_pb2.FeedMessage()
+    feed.ParseFromString(resp.content)
+
+    # Collect matching vehicles
+    raw = []
+    for entity in feed.entity:
+        if not entity.HasField("vehicle"):
+            continue
+        v = entity.vehicle
+        if v.trip.route_id != route_id:
+            continue
+        pos = v.position
+        raw.append({
+            "vehicle_id": v.vehicle.id or entity.id,
+            "label": v.vehicle.label or v.vehicle.id or entity.id,
+            "lat": pos.latitude,
+            "lon": pos.longitude,
+            "bearing": pos.bearing if pos.bearing else None,
+            "speed_kmh": round(pos.speed * 3.6) if pos.speed else None,
+            "trip_id": v.trip.trip_id,
+            "status": ["Incoming", "Stopped", "In Transit"][v.current_status] if v.current_status in (0, 1, 2) else str(v.current_status),
+            "direction_id": None,
+        })
+
+    # Look up direction_id from static DB.
+    # Live feed trip_ids often have a numeric suffix appended (e.g. "24805130" vs "24805"),
+    # so try exact match first, then strip the last 3 digits for unmatched ones.
+    trip_ids = [r["trip_id"] for r in raw]
+    dir_map = {}
+    if trip_ids:
+        rows = db.query(Trip.trip_id, Trip.direction_id).filter(Trip.trip_id.in_(trip_ids)).all()
+        dir_map = {row.trip_id: row.direction_id for row in rows}
+
+        unmatched = [t for t in trip_ids if t not in dir_map]
+        if unmatched:
+            stripped = {t: t[:-3] for t in unmatched if len(t) > 3}
+            fallback_rows = db.query(Trip.trip_id, Trip.direction_id).filter(
+                Trip.trip_id.in_(list(stripped.values()))
+            ).all()
+            fallback_map = {row.trip_id: row.direction_id for row in fallback_rows}
+            for orig, short in stripped.items():
+                if short in fallback_map:
+                    dir_map[orig] = fallback_map[short]
+
+    for r in raw:
+        r["direction_id"] = dir_map.get(r["trip_id"])
+
+    return raw
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,24 @@ const userIcon = L.divIcon({
   iconAnchor: [8, 8],
 });
 
+// Animated bus icon — red, rotates based on bearing
+const createBusIcon = (bearing) => L.divIcon({
+  className: '',
+  html: `
+    <div style="transform:rotate(${bearing || 0}deg); width:32px; height:32px;">
+      <svg viewBox="0 0 32 32" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="16,2 22,12 16,9 10,12" fill="#ef4444" opacity="0.9"/>
+        <rect x="9" y="10" width="14" height="18" rx="3" fill="#ef4444"/>
+        <rect x="11" y="13" width="4" height="4" rx="1" fill="rgba(0,0,0,0.5)"/>
+        <rect x="17" y="13" width="4" height="4" rx="1" fill="rgba(0,0,0,0.5)"/>
+        <circle cx="11.5" cy="29" r="2" fill="rgba(0,0,0,0.6)"/>
+        <circle cx="20.5" cy="29" r="2" fill="rgba(0,0,0,0.6)"/>
+      </svg>
+    </div>`,
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+});
+
 function App() {
   const [selectedStop, setSelectedStop] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -42,6 +60,11 @@ function App() {
   // Route display state
   const [routeData, setRouteData] = useState(null);
   const [mode, setMode] = useState('nearby'); // 'nearby' | 'route'
+
+  // Live vehicle positions
+  const [liveVehicles, setLiveVehicles] = useState([]);
+  const [liveError, setLiveError] = useState(false);
+  const [direction, setDirection] = useState(0); // 0 or 1
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -59,8 +82,7 @@ function App() {
     }
   }, []);
 
-  const fetchNearbyRoutes = async (lat, lon) => {
-    setNearbyLoading(true);
+  const fetchNearbyRoutes = async (lat, lon) => {    setNearbyLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/nearby-routes?lat=${lat}&lon=${lon}&radius=800&limit=12`);
       setNearbyRoutes(await res.json());
@@ -73,6 +95,9 @@ function App() {
 
   const searchRoute = async (routeId) => {
     setLoading(true);
+    setLiveVehicles([]);
+    setLiveError(false);
+    setDirection(0);
     try {
       const res = await fetch(`${API_BASE_URL}/routes/${encodeURIComponent(routeId)}/stops`);
       if (!res.ok) return false;
@@ -97,6 +122,27 @@ function App() {
       setLoading(false);
     }
   };
+
+  // Poll live vehicle positions every 15 s while a route is displayed
+  useEffect(() => {
+    if (mode !== 'route' || !routeData) return;
+
+    const fetchVehicles = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/routes/${encodeURIComponent(routeData.route_id)}/vehicles`);
+        if (!res.ok) { setLiveError(true); return; }
+        const data = await res.json();
+        setLiveVehicles(data);
+        setLiveError(false);
+      } catch {
+        setLiveError(true);
+      }
+    };
+
+    fetchVehicles();                        // immediate first call
+    const timer = setInterval(fetchVehicles, 15000);
+    return () => clearInterval(timer);
+  }, [mode, routeData]);
 
   const handleSearch = async () => {
     const q = searchQuery.trim();
@@ -214,7 +260,33 @@ function App() {
                     )}
                   </div>
                 </div>
-                <div className="text-xs text-gray-500">{routeData.stops.length} stops</div>
+                <div className="text-xs text-gray-500">{routeData.stops.length} stops
+                {liveVehicles.length > 0 && (
+                  <span className="ml-2 text-green-400">● {liveVehicles.filter(v => (v.direction_id ?? 1) === direction).length} live</span>
+                )}
+                {liveError && (
+                  <span className="ml-2 text-yellow-500">⚠ no live data</span>
+                )}
+              </div>
+              {/* Direction toggle */}
+              <div className="flex gap-1 mt-2">
+                <button
+                  onClick={() => setDirection(0)}
+                  className={`flex-1 py-1 text-xs rounded font-medium transition ${
+                    direction === 0 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                  }`}
+                >
+                  → Outbound
+                </button>
+                <button
+                  onClick={() => setDirection(1)}
+                  className={`flex-1 py-1 text-xs rounded font-medium transition ${
+                    direction === 1 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                  }`}
+                >
+                  ← Inbound
+                </button>
+              </div>
               </div>
 
               {/* Selected stop */}
@@ -281,7 +353,9 @@ function App() {
             {mode === 'route' && routeData && (
               <>
                 <Polyline
-                  positions={routeData.stops.map(s => [s.stop_lat, s.stop_lon])}
+                  positions={routeData.shape?.length > 0
+                    ? routeData.shape
+                    : routeData.stops.map(s => [s.stop_lat, s.stop_lon])}
                   color={lineColor}
                   weight={4}
                   opacity={0.9}
@@ -305,6 +379,28 @@ function App() {
                       </div>
                     </Popup>
                   </CircleMarker>
+                ))}
+
+                {/* Live bus markers — filtered by direction */}
+                {liveVehicles
+                  .filter(v => (v.direction_id ?? 1) === direction)
+                  .map((v) => (
+                  <Marker
+                    key={v.vehicle_id}
+                    position={[v.lat, v.lon]}
+                    icon={createBusIcon(v.bearing)}
+                    zIndexOffset={1000}
+                  >
+                    <Popup>
+                      <div className="text-sm">
+                        <strong>Bus {v.label}</strong><br />
+                        {v.speed_kmh != null && <>Speed: {v.speed_kmh} km/h<br /></>}
+                        {v.bearing != null && <>Bearing: {Math.round(v.bearing)}°<br /></>}
+                        Status: {v.status}<br />
+                        Trip: {v.trip_id}
+                      </div>
+                    </Popup>
+                  </Marker>
                 ))}
               </>
             )}
