@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # GTFS-RT real-time feeds
     GTFS_RT_VEHICLE_POSITIONS_URL: str = "https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-vp/beta/v1/VehiclePositions"
     GTFS_PRIMARY_KEY: Optional[str] = None
+    ADMIN_API_KEY: Optional[str] = None
 
     # App
     DEBUG: bool = False

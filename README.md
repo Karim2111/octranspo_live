@@ -10,6 +10,7 @@ A real-time Ottawa transit map built with FastAPI, PostgreSQL, and React-Leaflet
 - Sidebar lists bus routes within 800 m of the user, sorted by distance
 - Click any nearby route card to draw the full route polyline on the map
 - Search by route number (e.g. `10`, `95`) to display that route's stops and timing
+- Search by stop name when a route match is not found
 - Click any stop on the map or in the sidebar to see its arrival time
 
 ---
@@ -102,6 +103,9 @@ python -m venv .venv
 .venv\Scripts\activate        # Windows
 pip install -r requirements.txt
 
+# Create env file from template
+copy .env.example .env
+
 # Create tables and load GTFS data (~2–3 min first run)
 python init_db.py
 ```
@@ -117,6 +121,7 @@ uvicorn main:app --reload --port 8080
 ```bash
 cd frontend
 npm install
+copy .env.example .env
 npm start          # http://localhost:3000
 ```
 
@@ -129,14 +134,14 @@ npm start          # http://localhost:3000
 | GET | `/api/routes` | All routes |
 | GET | `/api/routes/{id}` | Single route |
 | GET | `/api/routes/{id}/trips` | Trips for a route |
-| GET | `/api/routes/{id}/stops` | Ordered stops with coords & times |
+| GET | `/api/routes/{id}/stops?direction_id=0|1` | Ordered stops for nearest scheduled trip in a direction |
 | GET | `/api/stops` | Stops (filter by `search`, `lat`/`lon`/`radius`) |
 | GET | `/api/stops/{id}` | Single stop |
 | GET | `/api/stops/{id}/stop_times` | Stop times at a stop |
 | GET | `/api/trips/{id}/stop_times` | Stop times for a trip |
 | GET | `/api/calendar` | All calendar entries |
 | GET | `/api/nearby-routes` | Routes near `lat`/`lon` within `radius` metres |
-| POST | `/api/admin/reload-gtfs` | Re-download and reload GTFS data |
+| POST | `/api/admin/reload-gtfs` | Re-download and reload GTFS data (requires `x-admin-key`) |
 
 ### Nearby routes example
 
@@ -171,10 +176,19 @@ python print_route.py 10
 
 ## Configuration
 
-Create `backend/.env` to override defaults:
+Create `backend/.env` to override defaults (or copy from `.env.example`):
 
 ```env
 DATABASE_URL=postgresql://octranspo:octranspo@localhost:5432/octranspo_live
 GTFS_STATIC_URL=https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip
+GTFS_RT_VEHICLE_POSITIONS_URL=https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-vp/beta/v1/VehiclePositions
+GTFS_PRIMARY_KEY=
+ADMIN_API_KEY=change-me
 DEBUG=True
+```
+
+Create `frontend/.env` (or copy from `.env.example`):
+
+```env
+REACT_APP_API_BASE_URL=http://localhost:8080/api
 ```

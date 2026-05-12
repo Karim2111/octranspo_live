@@ -4,6 +4,7 @@ import io
 import csv
 from datetime import datetime, date
 from typing import Optional
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from models import Route, Calendar, Stop, Trip, StopTime, Shape
@@ -26,32 +27,37 @@ class GTFSProcessor:
 
         zip_data = zipfile.ZipFile(io.BytesIO(response.content))
 
-        print("  Clearing existing data...")
-        # Truncate in FK-safe order (children first)
-        db.execute(__import__("sqlalchemy").text(
-            "TRUNCATE stop_times, shapes, trips, calendar, stops, routes RESTART IDENTITY CASCADE"
-        ))
-        db.commit()
+        try:
+            with db.begin():
+                print("  Clearing existing data...")
+                # Truncate in FK-safe order (children first)
+                db.execute(
+                    text(
+                        "TRUNCATE stop_times, shapes, trips, calendar, stops, routes RESTART IDENTITY CASCADE"
+                    )
+                )
 
-        print("  Loading stops...")
-        self._load_stops(zip_data, db)
+                print("  Loading stops...")
+                self._load_stops(zip_data, db)
 
-        print("  Loading routes...")
-        self._load_routes(zip_data, db)
+                print("  Loading routes...")
+                self._load_routes(zip_data, db)
 
-        print("  Loading calendar...")
-        self._load_calendar(zip_data, db)
+                print("  Loading calendar...")
+                self._load_calendar(zip_data, db)
 
-        print("  Loading trips...")
-        self._load_trips(zip_data, db)
+                print("  Loading trips...")
+                self._load_trips(zip_data, db)
 
-        print("  Loading shapes...")
-        self._load_shapes(zip_data, db)
+                print("  Loading shapes...")
+                self._load_shapes(zip_data, db)
 
-        print("  Loading stop_times (this may take a while)...")
-        self._load_stop_times(zip_data, db)
+                print("  Loading stop_times (this may take a while)...")
+                self._load_stop_times(zip_data, db)
+        except Exception:
+            db.rollback()
+            raise
 
-        db.commit()
         self.static_data_loaded = True
         print("Static GTFS data loaded successfully.")
 

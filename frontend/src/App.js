@@ -11,7 +11,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: require('leaflet/dist/images/marker-shadow.png'),
 });
 
-const API_BASE_URL = 'http://localhost:8080/api';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080/api';
 
 // Blue pulsing dot for user location
 const userIcon = L.divIcon({
@@ -56,6 +56,7 @@ function App() {
   // Nearby routes (sidebar suggestions)
   const [nearbyRoutes, setNearbyRoutes] = useState([]);
   const [nearbyLoading, setNearbyLoading] = useState(false);
+  const [stopResults, setStopResults] = useState([]);
 
   // Route display state
   const [routeData, setRouteData] = useState(null);
@@ -82,7 +83,8 @@ function App() {
     }
   }, []);
 
-  const fetchNearbyRoutes = async (lat, lon) => {    setNearbyLoading(true);
+  const fetchNearbyRoutes = async (lat, lon) => {
+    setNearbyLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/nearby-routes?lat=${lat}&lon=${lon}&radius=800&limit=12`);
       setNearbyRoutes(await res.json());
@@ -93,18 +95,20 @@ function App() {
     }
   };
 
-  const searchRoute = async (routeId) => {
+  const searchRoute = async (routeId, requestedDirection = direction) => {
     setLoading(true);
     setLiveVehicles([]);
     setLiveError(false);
-    setDirection(0);
     try {
-      const res = await fetch(`${API_BASE_URL}/routes/${encodeURIComponent(routeId)}/stops`);
+      const routePath = `${API_BASE_URL}/routes/${encodeURIComponent(routeId)}/stops?direction_id=${requestedDirection}`;
+      const res = await fetch(routePath);
       if (!res.ok) return false;
       const data = await res.json();
       setRouteData(data);
       setMode('route');
       setSelectedStop(null);
+      setStopResults([]);
+      setDirection(requestedDirection);
       // Fit map to route bounds
       if (data.stops.length > 0) {
         const lats = data.stops.map(s => s.stop_lat);
@@ -115,6 +119,29 @@ function App() {
         setMapZoom(13);
       }
       return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const searchStop = async (query) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/stops?search=${encodeURIComponent(query)}&limit=20`);
+      if (!res.ok) return false;
+      const stops = await res.json();
+      setMode('nearby');
+      setRouteData(null);
+      setStopResults(stops);
+      if (stops.length > 0 && stops[0].stop_lat != null && stops[0].stop_lon != null) {
+        setSelectedStop(stops[0]);
+        setMapCenter([stops[0].stop_lat, stops[0].stop_lon]);
+        setMapZoom(15);
+      }
+      return stops.length > 0;
     } catch (e) {
       console.error(e);
       return false;
@@ -149,9 +176,20 @@ function App() {
     if (!q) {
       setMode('nearby');
       setRouteData(null);
+      setStopResults([]);
       return;
     }
-    await searchRoute(q);
+    const routeFound = await searchRoute(q, direction);
+    if (!routeFound) {
+      await searchStop(q);
+    }
+  };
+
+  const handleDirectionChange = async (nextDirection) => {
+    setDirection(nextDirection);
+    if (routeData) {
+      await searchRoute(routeData.route_id, nextDirection);
+    }
   };
 
   const handleStopClick = (stop) => {
@@ -172,7 +210,7 @@ function App() {
             placeholder='Route number or stop name…'
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-white placeholder-gray-500"
           />
           <button
@@ -184,7 +222,7 @@ function App() {
           </button>
           {mode === 'route' && (
             <button
-              onClick={() => { setMode('nearby'); setRouteData(null); setSelectedStop(null); setSearchQuery(''); }}
+              onClick={() => { setMode('nearby'); setRouteData(null); setSelectedStop(null); setSearchQuery(''); setStopResults([]); }}
               className="px-3 py-2 bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 text-sm transition"
             >
               ✕
@@ -238,6 +276,26 @@ function App() {
                   })}
                 </div>
               )}
+
+              {stopResults.length > 0 && (
+                <div className="mt-6">
+                  <div className="text-xs text-gray-500 uppercase tracking-widest mb-3">
+                    Matching stops
+                  </div>
+                  <div className="space-y-2">
+                    {stopResults.map((s) => (
+                      <button
+                        key={s.stop_id}
+                        onClick={() => handleStopClick(s)}
+                        className="w-full p-3 rounded-lg bg-gray-800 hover:bg-gray-700 transition text-left"
+                      >
+                        <div className="text-sm font-medium text-white truncate">{s.name || 'Unnamed stop'}</div>
+                        <div className="text-xs text-gray-400">Stop #{s.stop_id}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -271,7 +329,7 @@ function App() {
               {/* Direction toggle */}
               <div className="flex gap-1 mt-2">
                 <button
-                  onClick={() => setDirection(0)}
+                  onClick={() => handleDirectionChange(0)}
                   className={`flex-1 py-1 text-xs rounded font-medium transition ${
                     direction === 0 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
                   }`}
@@ -279,7 +337,7 @@ function App() {
                   → Outbound
                 </button>
                 <button
-                  onClick={() => setDirection(1)}
+                  onClick={() => handleDirectionChange(1)}
                   className={`flex-1 py-1 text-xs rounded font-medium transition ${
                     direction === 1 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
                   }`}
@@ -404,6 +462,29 @@ function App() {
                 ))}
               </>
             )}
+
+            {/* Stop search markers while in nearby mode */}
+            {mode === 'nearby' && stopResults
+              .filter((s) => s.stop_lat != null && s.stop_lon != null)
+              .map((s) => (
+                <CircleMarker
+                  key={s.stop_id}
+                  center={[s.stop_lat, s.stop_lon]}
+                  radius={selectedStop?.stop_id === s.stop_id ? 8 : 5}
+                  color="#38bdf8"
+                  fillColor="#0f172a"
+                  fillOpacity={1}
+                  weight={2}
+                  eventHandlers={{ click: () => handleStopClick(s) }}
+                >
+                  <Popup>
+                    <div className="text-sm">
+                      <strong>{s.name || 'Unnamed stop'}</strong><br />
+                      Stop #{s.stop_id}
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              ))}
 
             <MapUpdater center={mapCenter} zoom={mapZoom} />
           </MapContainer>

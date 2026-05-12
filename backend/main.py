@@ -1,10 +1,14 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+import asyncio
+from datetime import date, datetime
 from typing import List, Optional
-import httpx
 
-from database import get_db, init_db
+import httpx
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import Session
+
+from database import SessionLocal, get_db, init_db
 from models import Stop, Route, Trip, StopTime, Calendar, Shape
 from schemas import StopResponse, RouteResponse, TripResponse, StopTimeResponse, CalendarResponse, ShapePointResponse
 from gtfs_processor import GTFSProcessor
@@ -22,6 +26,47 @@ app.add_middleware(
 )
 
 gtfs_processor = GTFSProcessor()
+reload_lock = asyncio.Lock()
+
+WEEKDAY_TO_FIELD = {
+    0: "monday",
+    1: "tuesday",
+    2: "wednesday",
+    3: "thursday",
+    4: "friday",
+    5: "saturday",
+    6: "sunday",
+}
+
+
+def _gtfs_time_to_seconds(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    try:
+        h, m, s = map(int, value.strip().split(":"))
+    except (ValueError, AttributeError):
+        return None
+    return h * 3600 + m * 60 + s
+
+
+def _seconds_since_midnight() -> int:
+    now = datetime.now()
+    return now.hour * 3600 + now.minute * 60 + now.second
+
+
+def _next_occurrence_delta(gtfs_seconds: Optional[int], now_seconds: int) -> int:
+    if gtfs_seconds is None:
+        return 10**9
+    delta = gtfs_seconds - now_seconds
+    return delta if delta >= 0 else delta + 24 * 3600
+
+
+def _require_admin_key(x_admin_key: Optional[str] = Header(default=None)):
+    expected = (settings.ADMIN_API_KEY or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="ADMIN_API_KEY is not configured")
+    if x_admin_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid admin key")
 
 
 @app.on_event("startup")
@@ -76,13 +121,26 @@ async def get_stop_times_for_stop(
     db: Session = Depends(get_db),
 ):
     """Return upcoming stop_times entries for a given stop."""
+    now_seconds = _seconds_since_midnight()
+    scan_limit = min(max(limit * 6, 200), 2500)
     rows = (
         db.query(StopTime)
         .filter(StopTime.stop_id == stop_id)
-        .limit(limit)
+        .limit(scan_limit)
         .all()
     )
-    return rows
+
+    rows_sorted = sorted(
+        rows,
+        key=lambda st: (
+            _next_occurrence_delta(
+                _gtfs_time_to_seconds(st.departure_time or st.arrival_time),
+                now_seconds,
+            ),
+            _gtfs_time_to_seconds(st.departure_time or st.arrival_time) or 10**9,
+        ),
+    )
+    return rows_sorted[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -113,19 +171,80 @@ async def get_trips_for_route(
 
 
 @app.get("/api/routes/{route_id}/stops")
-async def get_route_stops(route_id: str, db: Session = Depends(get_db)):
-    """Return ordered stops (with coordinates) for the first available trip on this route."""
+async def get_route_stops(
+    route_id: str,
+    direction_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Return ordered stops for the nearest scheduled trip on this route."""
     route = db.query(Route).filter(Route.route_id == route_id).first()
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    trip = db.query(Trip).filter(Trip.route_id == route_id).first()
-    if not trip:
+    today = date.today()
+    weekday_field = WEEKDAY_TO_FIELD[today.weekday()]
+
+    trip_query = (
+        db.query(Trip)
+        .outerjoin(Calendar, Trip.service_id == Calendar.service_id)
+        .filter(Trip.route_id == route_id)
+        .filter(
+            or_(
+                Calendar.service_id.is_(None),
+                and_(
+                    Calendar.start_date <= today,
+                    Calendar.end_date >= today,
+                    getattr(Calendar, weekday_field).is_(True),
+                ),
+            )
+        )
+    )
+
+    if direction_id is not None:
+        trip_query = trip_query.filter(Trip.direction_id == direction_id)
+
+    trips = trip_query.limit(2000).all()
+    if not trips:
         raise HTTPException(status_code=404, detail="No trips found for route")
+
+    trip_ids = [t.trip_id for t in trips]
+    first_stops_subq = (
+        db.query(
+            StopTime.trip_id.label("trip_id"),
+            func.min(StopTime.stop_sequence).label("min_seq"),
+        )
+        .filter(StopTime.trip_id.in_(trip_ids))
+        .group_by(StopTime.trip_id)
+        .subquery()
+    )
+    first_departures = (
+        db.query(StopTime.trip_id, StopTime.departure_time)
+        .join(
+            first_stops_subq,
+            and_(
+                StopTime.trip_id == first_stops_subq.c.trip_id,
+                StopTime.stop_sequence == first_stops_subq.c.min_seq,
+            ),
+        )
+        .all()
+    )
+
+    departure_map = {row.trip_id: row.departure_time for row in first_departures}
+    now_seconds = _seconds_since_midnight()
+    best_trip = min(
+        trips,
+        key=lambda t: (
+            _next_occurrence_delta(
+                _gtfs_time_to_seconds(departure_map.get(t.trip_id)),
+                now_seconds,
+            ),
+            t.trip_id,
+        ),
+    )
 
     stop_times = (
         db.query(StopTime)
-        .filter(StopTime.trip_id == trip.trip_id)
+        .filter(StopTime.trip_id == best_trip.trip_id)
         .order_by(StopTime.stop_sequence)
         .all()
     )
@@ -139,7 +258,7 @@ async def get_route_stops(route_id: str, db: Session = Depends(get_db)):
     result = []
     for st in stop_times:
         stop = stops_by_id.get(st.stop_id)
-        if stop and stop.stop_lat and stop.stop_lon:
+        if stop and stop.stop_lat is not None and stop.stop_lon is not None:
             result.append({
                 "stop_id": stop.stop_id,
                 "name": stop.name,
@@ -152,10 +271,10 @@ async def get_route_stops(route_id: str, db: Session = Depends(get_db)):
 
     # Load shape geometry for road-following polyline
     shape = []
-    if trip.shape_id:
+    if best_trip.shape_id:
         shape_rows = (
             db.query(Shape)
-            .filter(Shape.shape_id == trip.shape_id)
+            .filter(Shape.shape_id == best_trip.shape_id)
             .order_by(Shape.shape_pt_sequence)
             .all()
         )
@@ -165,8 +284,9 @@ async def get_route_stops(route_id: str, db: Session = Depends(get_db)):
         "route_id": route.route_id,
         "name": route.name,
         "route_color": route.route_color,
-        "trip_id": trip.trip_id,
-        "trip_headsign": trip.trip_headsign,
+        "trip_id": best_trip.trip_id,
+        "trip_headsign": best_trip.trip_headsign,
+        "direction_id": best_trip.direction_id,
         "stops": result,
         "shape": shape,
     }
@@ -292,11 +412,14 @@ async def get_nearby_routes(
 @app.get("/api/debug/gtfs-rt")
 async def debug_gtfs_rt():
     """Test the GTFS-RT vehicle positions connection."""
+    if not settings.DEBUG:
+        raise HTTPException(status_code=404, detail="Not found")
+
     key = (settings.GTFS_PRIMARY_KEY or "").strip()
     url = settings.GTFS_RT_VEHICLE_POSITIONS_URL
     headers = {"Ocp-Apim-Subscription-Key": key}
 
-    result = {"url": url, "key_loaded": bool(key), "key_prefix": key[:8] + "..." if key else None}
+    result = {"url": url, "key_loaded": bool(key)}
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -393,11 +516,19 @@ async def get_route_vehicles(route_id: str, db: Session = Depends(get_db)):
 # Admin
 # ---------------------------------------------------------------------------
 
-@app.post("/api/admin/reload-gtfs")
-async def reload_gtfs(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+@app.post("/api/admin/reload-gtfs", dependencies=[Depends(_require_admin_key)])
+async def reload_gtfs(background_tasks: BackgroundTasks):
     """Trigger a fresh download and import of the GTFS zip in the background."""
+    if reload_lock.locked():
+        raise HTTPException(status_code=409, detail="A GTFS reload is already running")
+
     async def _reload():
-        await gtfs_processor.load_static_gtfs(db)
+        async with reload_lock:
+            db = SessionLocal()
+            try:
+                await gtfs_processor.load_static_gtfs(db)
+            finally:
+                db.close()
 
     background_tasks.add_task(_reload)
     return {"message": "GTFS reload started in the background"}
