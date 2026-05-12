@@ -60,3 +60,6 @@ htmlcov/
 # ML Models (if large)
 # *.pkl
 # models/
+
+
+backend/GTFS/

@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Float, Integer, Boolean, ForeignKey, Date, DateTime
-from backend.db_init.database import Base
+from db_init.database import Base
 
 
 class Route(Base):

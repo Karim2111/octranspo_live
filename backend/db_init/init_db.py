@@ -3,8 +3,15 @@ Database initialization script
 Run this to set up the database schema and load initial data
 """
 import asyncio
-from database import init_db, SessionLocal
-from gtfs_processor import GTFSProcessor
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from db_init.database import init_db, SessionLocal
+from db_init.gtfs_processor import GTFSProcessor
 
 async def initialize_database():
     """Initialize database and load GTFS data"""

@@ -1,14 +1,13 @@
-import httpx
 import zipfile
 import io
 import csv
+from pathlib import Path
 from datetime import datetime, date
 from typing import Optional
-from sqlalchemy import text
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from models import Route, Calendar, Stop, Trip, StopTime, Shape
-from config import settings
+from db_init.models import Route, Calendar, Stop, Trip, StopTime, Shape
 
 
 class GTFSProcessor:
@@ -16,50 +15,37 @@ class GTFSProcessor:
         self.static_data_loaded = False
 
     async def load_static_gtfs(self, db: Session):
-        """Download GTFSExport.zip and load all tables into the database."""
-        print(f"Downloading GTFS data from {settings.GTFS_STATIC_URL} ...")
+        """Load GTFS zip files from backend/GTFS into the database."""
+        gtfs_dir = Path(__file__).resolve().parent.parent / "GTFS"
+        if not gtfs_dir.exists() or not gtfs_dir.is_dir():
+            raise FileNotFoundError(f"GTFS folder not found: {gtfs_dir}")
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.get(settings.GTFS_STATIC_URL, timeout=120.0)
+        zip_paths = sorted(gtfs_dir.glob("*.zip"))
+        if not zip_paths:
+            raise FileNotFoundError(f"No GTFS zip files found in: {gtfs_dir}")
 
-        if response.status_code != 200:
-            raise Exception(f"Failed to download GTFS data: {response.status_code}")
-
-        zip_data = zipfile.ZipFile(io.BytesIO(response.content))
-
-        try:
-            with db.begin():
-                print("  Clearing existing data...")
-                # Truncate in FK-safe order (children first)
-                db.execute(
-                    text(
-                        "TRUNCATE stop_times, shapes, trips, calendar, stops, routes RESTART IDENTITY CASCADE"
-                    )
-                )
-
-                print("  Loading stops...")
-                self._load_stops(zip_data, db)
-
-                print("  Loading routes...")
-                self._load_routes(zip_data, db)
-
-                print("  Loading calendar...")
-                self._load_calendar(zip_data, db)
-
-                print("  Loading trips...")
-                self._load_trips(zip_data, db)
-
-                print("  Loading shapes...")
-                self._load_shapes(zip_data, db)
-
-                print("  Loading stop_times (this may take a while)...")
-                self._load_stop_times(zip_data, db)
-        except Exception:
-            db.rollback()
-            raise
+        for zip_path in zip_paths:
+            print(f"Loading GTFS file: {zip_path.name}")
+            try:
+                with zipfile.ZipFile(zip_path) as zip_data:
+                    with db.begin():
+                        self._load_stops(zip_data, db)
+                        print("Stops complete")
+                        self._load_routes(zip_data, db)
+                        print("Routes complete")
+                        self._load_calendar(zip_data, db)
+                        print("Calendar complete")
+                        self._load_trips(zip_data, db)
+                        print("Trips complete")
+                        self._load_shapes(zip_data, db)
+                        print("Shapes complete")
+                        self._load_stop_times(zip_data, db)
+                        print("Stop times complete")
+            except Exception:
+                db.rollback()
+                raise
 
         self.static_data_loaded = True
-        print("Static GTFS data loaded successfully.")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -74,6 +60,15 @@ class GTFSProcessor:
             return datetime.strptime(date_str.strip(), "%Y%m%d").date()
         except ValueError:
             return None
+
+    @staticmethod
+    def _bulk_insert_ignore(db: Session, model, rows):
+        if not rows:
+            return
+        index_elements = [col.name for col in model.__table__.primary_key.columns]
+        stmt = pg_insert(model.__table__).values(rows)
+        stmt = stmt.on_conflict_do_nothing(index_elements=index_elements)
+        db.execute(stmt)
 
     # ------------------------------------------------------------------
     # Loaders
@@ -94,12 +89,10 @@ class GTFSProcessor:
                     )
                 )
                 if len(batch) >= 1000:
-                    db.bulk_insert_mappings(Stop, batch)
-                    db.flush()
+                    self._bulk_insert_ignore(db, Stop, batch)
                     batch = []
             if batch:
-                db.bulk_insert_mappings(Stop, batch)
-                db.flush()
+                self._bulk_insert_ignore(db, Stop, batch)
 
     def _load_routes(self, zip_data: zipfile.ZipFile, db: Session):
         with zip_data.open("routes.txt") as f:
@@ -117,8 +110,7 @@ class GTFSProcessor:
                     )
                 )
             if batch:
-                db.bulk_insert_mappings(Route, batch)
-                db.flush()
+                self._bulk_insert_ignore(db, Route, batch)
 
     def _load_calendar(self, zip_data: zipfile.ZipFile, db: Session):
         with zip_data.open("calendar.txt") as f:
@@ -140,8 +132,7 @@ class GTFSProcessor:
                     )
                 )
             if batch:
-                db.bulk_insert_mappings(Calendar, batch)
-                db.flush()
+                self._bulk_insert_ignore(db, Calendar, batch)
 
     def _load_trips(self, zip_data: zipfile.ZipFile, db: Session):
         with zip_data.open("trips.txt") as f:
@@ -160,16 +151,13 @@ class GTFSProcessor:
                     )
                 )
                 if len(batch) >= 5000:
-                    db.bulk_insert_mappings(Trip, batch)
-                    db.flush()
+                    self._bulk_insert_ignore(db, Trip, batch)
                     batch = []
             if batch:
-                db.bulk_insert_mappings(Trip, batch)
-                db.flush()
+                self._bulk_insert_ignore(db, Trip, batch)
 
     def _load_shapes(self, zip_data: zipfile.ZipFile, db: Session):
         if "shapes.txt" not in zip_data.namelist():
-            print("  shapes.txt not found in zip, skipping.")
             return
         with zip_data.open("shapes.txt") as f:
             reader = csv.DictReader(io.TextIOWrapper(f, "utf-8"))
@@ -184,12 +172,10 @@ class GTFSProcessor:
                     )
                 )
                 if len(batch) >= 10000:
-                    db.bulk_insert_mappings(Shape, batch)
-                    db.flush()
+                    self._bulk_insert_ignore(db, Shape, batch)
                     batch = []
             if batch:
-                db.bulk_insert_mappings(Shape, batch)
-                db.flush()
+                self._bulk_insert_ignore(db, Shape, batch)
 
     def _load_stop_times(self, zip_data: zipfile.ZipFile, db: Session):
         with zip_data.open("stop_times.txt") as f:
@@ -206,10 +192,8 @@ class GTFSProcessor:
                     )
                 )
                 if len(batch) >= 10000:
-                    db.bulk_insert_mappings(StopTime, batch)
-                    db.flush()
+                    self._bulk_insert_ignore(db, StopTime, batch)
                     batch = []
             if batch:
-                db.bulk_insert_mappings(StopTime, batch)
-                db.flush()
+                self._bulk_insert_ignore(db, StopTime, batch)
 

@@ -8,10 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from database import SessionLocal, get_db, init_db
-from models import Stop, Route, Trip, StopTime, Calendar, Shape
+from db_init.database import SessionLocal, get_db, init_db
+from db_init.models import Stop, Route, Trip, StopTime, Calendar, Shape
 from schemas import StopResponse, RouteResponse, TripResponse, StopTimeResponse, CalendarResponse, ShapePointResponse
-from gtfs_processor import GTFSProcessor
+from db_init.gtfs_processor import GTFSProcessor
 from config import settings
 
 app = FastAPI(title="OC Transpo Live API", version="1.0.0")

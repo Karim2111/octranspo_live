@@ -1,0 +1,22 @@
+
+- historical data for each bus
+- static schedules for each bus
+- real-time bus arrival for each stop
+
+
+- Use real time bus location to predict when the bus will arrive at a specific stop
+- Use historical data (scheduled time vs actual time) to predict how late the bus will be at a specific stop
+- 
+
+
+Hey, I'm Alex's friend and he showed me your work with oc transpo. I was wondering if you had some data that i was looking for. 
+im working on a bus arrival prediction model that uses the real-time GPS location of a bus and historical data to predict when a bus will reach a specific stop.
+im specifically looking for:
+historical static schedules
+historical actual arrival times for each stop
+
+
+
+a bus arrival prediction model that uses real-time GPS location + historical schedule data to predict when a bus will reach a specific stop.
+I'm looking for structured data to train a regression model, ideally:
+- Historical scheduled vs. actual arrival times per stop
