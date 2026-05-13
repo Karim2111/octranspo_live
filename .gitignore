@@ -62,4 +62,5 @@ htmlcov/
 # models/
 
 
-backend/GTFS/
+backend/db/GTFS/
+ml/extract/GTFS/

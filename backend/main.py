@@ -1,17 +1,15 @@
-import asyncio
 from datetime import date, datetime
 from typing import List, Optional
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from db_init.database import SessionLocal, get_db, init_db
-from db_init.models import Stop, Route, Trip, StopTime, Calendar, Shape
+from db.database import get_db, init_db
+from db.models import Stop, Route, Trip, StopTime, Calendar, Shape
 from schemas import StopResponse, RouteResponse, TripResponse, StopTimeResponse, CalendarResponse, ShapePointResponse
-from db_init.gtfs_processor import GTFSProcessor
 from config import settings
 
 app = FastAPI(title="OC Transpo Live API", version="1.0.0")
@@ -24,9 +22,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-gtfs_processor = GTFSProcessor()
-reload_lock = asyncio.Lock()
 
 WEEKDAY_TO_FIELD = {
     0: "monday",
@@ -61,17 +56,9 @@ def _next_occurrence_delta(gtfs_seconds: Optional[int], now_seconds: int) -> int
     return delta if delta >= 0 else delta + 24 * 3600
 
 
-def _require_admin_key(x_admin_key: Optional[str] = Header(default=None)):
-    expected = (settings.ADMIN_API_KEY or "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="ADMIN_API_KEY is not configured")
-    if x_admin_key != expected:
-        raise HTTPException(status_code=401, detail="Invalid admin key")
-
-
 @app.on_event("startup")
 async def startup_event():
-    """Create tables on startup (does not load GTFS data automatically)."""
+    """Create missing database tables on startup."""
     init_db()
 
 
@@ -510,29 +497,6 @@ async def get_route_vehicles(route_id: str, db: Session = Depends(get_db)):
         r["direction_id"] = dir_map.get(r["trip_id"])
 
     return raw
-
-
-# ---------------------------------------------------------------------------
-# Admin
-# ---------------------------------------------------------------------------
-
-@app.post("/api/admin/reload-gtfs", dependencies=[Depends(_require_admin_key)])
-async def reload_gtfs(background_tasks: BackgroundTasks):
-    """Trigger a fresh download and import of the GTFS zip in the background."""
-    if reload_lock.locked():
-        raise HTTPException(status_code=409, detail="A GTFS reload is already running")
-
-    async def _reload():
-        async with reload_lock:
-            db = SessionLocal()
-            try:
-                await gtfs_processor.load_static_gtfs(db)
-            finally:
-                db.close()
-
-    background_tasks.add_task(_reload)
-    return {"message": "GTFS reload started in the background"}
-
 
 if __name__ == "__main__":
     import uvicorn

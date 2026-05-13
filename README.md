@@ -32,12 +32,14 @@ A real-time Ottawa transit map built with FastAPI, PostgreSQL, and React-Leaflet
 octranspo_live/
 ├── backend/
 │   ├── main.py            # FastAPI app + all REST endpoints
-│   ├── models.py          # SQLAlchemy ORM (5 GTFS tables)
 │   ├── schemas.py         # Pydantic response models
-│   ├── gtfs_processor.py  # Downloads + bulk-loads GTFS zip
-│   ├── database.py        # Engine + session factory
 │   ├── config.py          # Settings (DATABASE_URL, GTFS_STATIC_URL, …)
-│   ├── init_db.py         # One-shot: create tables + load GTFS data
+│   ├── db/
+│   │   ├── GTFS/          # Static GTFS zip storage
+│   │   ├── database.py    # Engine + session factory
+│   │   ├── models.py      # SQLAlchemy ORM tables
+│   │   ├── gtfs_processor.py # Download today's GTFS + replace DB data
+│   │   ├── init_db.py     # Create tables + load local GTFS zips
 │   └── print_route.py     # CLI: print a route's current active trip 
 ├── frontend/
 │   ├── src/
@@ -65,8 +67,16 @@ trips                    stop_times
 trip_id       PK         trip_id       PK (composite)
 route_id      FK→routes  stop_sequence PK (composite)
 service_id               stop_id       FK→stops
-trip_headsign            arrival_time
-direction_id             departure_time
+shape_id                 arrival_time
+trip_headsign            departure_time
+direction_id
+
+shapes
+──────────────
+shape_id       PK (composite)
+shape_pt_sequence PK (composite)
+shape_pt_lat
+shape_pt_lon
 
 calendar
 ────────────
@@ -74,6 +84,19 @@ service_id  PK
 monday … sunday (boolean)
 start_date
 end_date
+
+real_time
+────────────
+id           PK
+time
+trip_id
+delay_min
+latitude
+longitude
+speed
+recorded_timestamp
+next_stop_id
+stop_sequence
 ```
 
 ---
@@ -106,8 +129,13 @@ pip install -r requirements.txt
 # Create env file from template
 copy .env.example .env
 
-# Create tables and load GTFS data (~2–3 min first run)
+# One-time initial import from zip files already in backend/db/GTFS
+cd db
 python init_db.py
+
+# Later, when you want today's current static feed from GTFS_STATIC_URL.
+# This replaces existing static GTFS rows by default.
+python gtfs_processor.py
 ```
 
 Start the API server (port 8080):
@@ -115,6 +143,9 @@ Start the API server (port 8080):
 ```bash
 uvicorn main:app --reload --port 8080
 ```
+
+The backend startup only creates missing tables and reads existing data from
+Postgres. It does not download, extract, or import GTFS files.
 
 ### 3 — Frontend
 
@@ -141,7 +172,6 @@ npm start          # http://localhost:3000
 | GET | `/api/trips/{id}/stop_times` | Stop times for a trip |
 | GET | `/api/calendar` | All calendar entries |
 | GET | `/api/nearby-routes` | Routes near `lat`/`lon` within `radius` metres |
-| POST | `/api/admin/reload-gtfs` | Re-download and reload GTFS data (requires `x-admin-key`) |
 
 ### Nearby routes example
 

@@ -10,8 +10,8 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from db_init.database import init_db, SessionLocal
-from db_init.gtfs_processor import GTFSProcessor
+from db.database import init_db, SessionLocal
+from db.gtfs_processor import GTFSProcessor
 
 async def initialize_database():
     """Initialize database and load GTFS data"""
