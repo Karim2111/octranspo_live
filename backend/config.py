@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     GTFS_RT_VEHICLE_POSITIONS_URL: str = "https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-vp/beta/v1/VehiclePositions"
     GTFS_PRIMARY_KEY: Optional[str] = None
     ADMIN_API_KEY: Optional[str] = None
+    ML_SERVICE_URL: str = "http://localhost:8090"
 
     # App
     DEBUG: bool = False

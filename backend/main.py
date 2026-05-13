@@ -4,6 +4,7 @@ from typing import List, Optional
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
@@ -390,6 +391,49 @@ async def get_nearby_routes(
         }
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Predictions (ML service proxy)
+# ---------------------------------------------------------------------------
+
+class PredictRequest(BaseModel):
+    observed_at: Optional[datetime] = None
+    bus_lat: float
+    bus_lon: float
+    speed_kmh: Optional[float] = None
+    current_delay_min: float = 0.0
+    target_stop_lat: float
+    target_stop_lon: float
+    scheduled_arrival: str
+    stop_sequence: int
+    stops_remaining: int
+    route_id: str
+    direction_id: int
+
+
+@app.post("/api/predict")
+async def predict_stop(req: PredictRequest):
+    if not settings.ML_SERVICE_URL:
+        raise HTTPException(status_code=503, detail="ML service not configured")
+
+    observed_at = req.observed_at or datetime.utcnow()
+    payload = req.dict()
+    payload["observed_at"] = observed_at.isoformat()
+    payload["day_of_week"] = observed_at.weekday()
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(f"{settings.ML_SERVICE_URL}/predict", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ML service error {exc.response.status_code}: {exc.response.text[:300]}",
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"ML service error: {exc}")
 
 
 # ---------------------------------------------------------------------------

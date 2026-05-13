@@ -67,6 +67,10 @@ function App() {
   const [liveError, setLiveError] = useState(false);
   const [direction, setDirection] = useState(0); // 0 or 1
 
+  const [predictionByStopId, setPredictionByStopId] = useState({});
+  const [predictionErrorByStopId, setPredictionErrorByStopId] = useState({});
+  const [predictingStopId, setPredictingStopId] = useState(null);
+
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -195,6 +199,88 @@ function App() {
   const handleStopClick = (stop) => {
     setSelectedStop(stop);
     setMapCenter([stop.stop_lat, stop.stop_lon]);
+  };
+
+  const findNearestVehicle = (stop) => {
+    if (!liveVehicles.length) return null;
+    const candidates = liveVehicles.filter(v => (v.direction_id ?? 1) === direction);
+    if (candidates.length === 0) return null;
+
+    let best = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const v of candidates) {
+      const dLat = v.lat - stop.stop_lat;
+      const dLon = v.lon - stop.stop_lon;
+      const dist = dLat * dLat + dLon * dLon;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = v;
+      }
+    }
+    return best;
+  };
+
+  const handlePredictStop = async (stop) => {
+    if (!routeData) return;
+    const vehicle = findNearestVehicle(stop);
+    if (!vehicle) {
+      setPredictionErrorByStopId((prev) => ({
+        ...prev,
+        [stop.stop_id]: 'No live vehicle data for this route direction.',
+      }));
+      return;
+    }
+
+    const scheduledArrival = stop.arrival_time || stop.departure_time;
+    if (!scheduledArrival) {
+      setPredictionErrorByStopId((prev) => ({
+        ...prev,
+        [stop.stop_id]: 'No scheduled arrival time available for this stop.',
+      }));
+      return;
+    }
+
+    const stopIndex = routeData.stops.findIndex(s => s.stop_id === stop.stop_id);
+    const stopsRemaining = stopIndex >= 0 ? routeData.stops.length - stopIndex : 1;
+
+    setPredictingStopId(stop.stop_id);
+    setPredictionErrorByStopId((prev) => ({ ...prev, [stop.stop_id]: null }));
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/predict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          observed_at: new Date().toISOString(),
+          bus_lat: vehicle.lat,
+          bus_lon: vehicle.lon,
+          speed_kmh: vehicle.speed_kmh ?? null,
+          current_delay_min: 0,
+          target_stop_lat: stop.stop_lat,
+          target_stop_lon: stop.stop_lon,
+          scheduled_arrival: scheduledArrival,
+          stop_sequence: stop.stop_sequence ?? stopIndex + 1,
+          stops_remaining: stopsRemaining,
+          route_id: routeData.route_id,
+          direction_id: routeData.direction_id ?? direction,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || 'Prediction failed');
+      }
+
+      const data = await res.json();
+      setPredictionByStopId((prev) => ({ ...prev, [stop.stop_id]: data }));
+    } catch (e) {
+      setPredictionErrorByStopId((prev) => ({
+        ...prev,
+        [stop.stop_id]: e?.message || 'Prediction failed',
+      }));
+    } finally {
+      setPredictingStopId(null);
+    }
   };
 
   const lineColor = routeData?.route_color ? `#${routeData.route_color}` : '#e53e3e';
@@ -356,6 +442,28 @@ function App() {
                   {selectedStop.arrival_time && (
                     <div className="text-xs text-blue-400 mt-1">🕐 {selectedStop.arrival_time}</div>
                   )}
+                  {mode === 'route' && (
+                    <div className="mt-3">
+                      <button
+                        onClick={() => handlePredictStop(selectedStop)}
+                        disabled={predictingStopId === selectedStop.stop_id}
+                        className="px-3 py-1.5 bg-emerald-600 text-white rounded-md text-xs font-medium hover:bg-emerald-700 transition disabled:opacity-50"
+                      >
+                        {predictingStopId === selectedStop.stop_id ? 'Predicting…' : 'Predict'}
+                      </button>
+                      {predictionByStopId[selectedStop.stop_id] && (
+                        <div className="text-xs text-emerald-300 mt-2">
+                          Predicted: {predictionByStopId[selectedStop.stop_id].predicted_arrival} ({predictionByStopId[selectedStop.stop_id].predicted_delay_min} min)
+                          <div className="text-[11px] text-emerald-200">±{predictionByStopId[selectedStop.stop_id].confidence_band_min} min</div>
+                        </div>
+                      )}
+                      {predictionErrorByStopId[selectedStop.stop_id] && (
+                        <div className="text-xs text-red-300 mt-2">
+                          {predictionErrorByStopId[selectedStop.stop_id]}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -434,6 +542,26 @@ function App() {
                         <strong>{stop.name}</strong><br />
                         Stop #{stop.stop_id}<br />
                         {stop.arrival_time && <>🕐 {stop.arrival_time}</>}
+                        <div className="mt-2">
+                          <button
+                            onClick={() => handlePredictStop(stop)}
+                            disabled={predictingStopId === stop.stop_id}
+                            className="px-2 py-1 bg-emerald-600 text-white rounded text-xs font-medium hover:bg-emerald-700 transition disabled:opacity-50"
+                          >
+                            {predictingStopId === stop.stop_id ? 'Predicting…' : 'Predict'}
+                          </button>
+                        </div>
+                        {predictionByStopId[stop.stop_id] && (
+                          <div className="text-xs text-emerald-300 mt-2">
+                            Predicted: {predictionByStopId[stop.stop_id].predicted_arrival} ({predictionByStopId[stop.stop_id].predicted_delay_min} min)
+                            <div className="text-[11px] text-emerald-200">±{predictionByStopId[stop.stop_id].confidence_band_min} min</div>
+                          </div>
+                        )}
+                        {predictionErrorByStopId[stop.stop_id] && (
+                          <div className="text-xs text-red-300 mt-2">
+                            {predictionErrorByStopId[stop.stop_id]}
+                          </div>
+                        )}
                       </div>
                     </Popup>
                   </CircleMarker>
